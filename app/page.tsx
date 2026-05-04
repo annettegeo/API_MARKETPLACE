@@ -298,7 +298,7 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
           console.error('Failed to set admin session:', e);
         }
 
-        // Fetch user's purchased APIs
+        // Fetch user's purchased APIs + wishlist
         try {
           const { getFirestore, doc, getDoc } = await import('firebase/firestore');
           const { app } = await import('@/app/firebase/config');
@@ -308,6 +308,8 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
           if (userDoc.exists()) {
             const userData = userDoc.data();
             setPurchasedAPIs(userData.purchasedAPIs || []);
+            setWishlist(userData.wishlist || []);
+            setCart(userData.cart || []);
           }
         } catch (error) {
           console.error('Error fetching user data:', error);
@@ -397,24 +399,38 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
     }
   };
 
-  const handleWishlistToggle = (apiId: string) => {
-    setWishlist(prev => {
-      if (prev.includes(apiId)) {
-        return prev.filter(id => id !== apiId);
-      } else {
-        return [...prev, apiId];
-      }
-    });
+  const handleWishlistToggle = async (apiId: string) => {
+    if (!user) return;
+    const isLiked = wishlist.includes(apiId);
+    const newWishlist = isLiked
+      ? wishlist.filter(id => id !== apiId)
+      : [...wishlist, apiId];
+    setWishlist(newWishlist);
+    try {
+      const { getFirestore, doc, updateDoc } = await import('firebase/firestore');
+      const { app } = await import('@/app/firebase/config');
+      const db = getFirestore(app);
+      await updateDoc(doc(db, 'users', user.uid), { wishlist: newWishlist });
+    } catch (error) {
+      console.error('Error updating wishlist:', error);
+      setWishlist(wishlist); // revert on error
+    }
   };
 
-  const handleCartToggle = (apiId: string) => {
-    setCart(prev => {
-      if (prev.includes(apiId)) {
-        return prev.filter(id => id !== apiId);
-      } else {
-        return [...prev, apiId];
-      }
-    });
+  const handleCartToggle = async (apiId: string) => {
+    if (!user) return;
+    const isInCartNow = cart.includes(apiId);
+    const newCart = isInCartNow ? cart.filter(id => id !== apiId) : [...cart, apiId];
+    setCart(newCart);
+    try {
+      const { getFirestore, doc, updateDoc } = await import('firebase/firestore');
+      const { app } = await import('@/app/firebase/config');
+      const db = getFirestore(app);
+      await updateDoc(doc(db, 'users', user.uid), { cart: newCart });
+    } catch (error) {
+      console.error('Error updating cart:', error);
+      setCart(cart);
+    }
   };
 
   const filteredApis = apis.filter(api => {
@@ -484,18 +500,13 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
 
                       <button
                         onClick={() => {
-                          router.push('/wishlist');
+                          router.push('/profile');
                           setShowUserDropdown(false);
                         }}
                         className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-3"
                       >
-                        <span className="text-red-500">❤️</span>
-                        <span className="text-gray-700">Wishlist</span>
-                        {wishlist.length > 0 && (
-                          <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full">
-                            {wishlist.length}
-                          </span>
-                        )}
+                        <span className="text-purple-500">👤</span>
+                        <span className="text-gray-700">Profile Dashboard</span>
                       </button>
 
                       <button
@@ -512,28 +523,6 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
                             {cart.length}
                           </span>
                         )}
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          router.push('/orders');
-                          setShowUserDropdown(false);
-                        }}
-                        className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-3"
-                      >
-                        <span className="text-green-500">📦</span>
-                        <span className="text-gray-700">My Orders</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          router.push('/profile');
-                          setShowUserDropdown(false);
-                        }}
-                        className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-3"
-                      >
-                        <span className="text-purple-500">👤</span>
-                        <span className="text-gray-700">Profile Dashboard</span>
                       </button>
 
                       <div className="border-t border-gray-200 mt-2 pt-2">
@@ -791,21 +780,20 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredApis.map((api) => {
-              const apiId = slugify(api.API);
-              const isInWishlist = wishlist.includes(apiId);
-              const isInCart = cart.includes(apiId);
+              const isInWishlist = wishlist.includes(api.id!);
+              const isInCart = cart.includes(api.id!);
 
               return (
                 <div
                   key={api.API}
                   className="bg-white rounded-lg shadow-md p-6 h-full flex flex-col transition hover:shadow-xl border border-gray-200 relative group"
                 >
-                  {/* Wishlist and Cart Buttons */}
-                  <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {/* Wishlist + Cart Buttons */}
+                  <div className="absolute top-4 right-4 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleWishlistToggle(apiId);
+                        handleWishlistToggle(api.id!);
                       }}
                       className={`p-2 rounded-full transition-colors ${isInWishlist
                         ? 'bg-red-500 text-white'
@@ -817,31 +805,24 @@ function LandingPage({ onApiSelect }: { onApiSelect: (apiId: string, name?: stri
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
                       </svg>
                     </button>
-
-                    <div className="relative">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCartToggle(apiId);
-                        }}
-                        className={`p-2 rounded-full transition-colors ${isInCart
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-gray-200 text-gray-600 hover:bg-blue-100 hover:text-blue-500'
-                          }`}
-                        title={isInCart ? 'Remove from cart' : 'Add to cart'}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-                        </svg>
-                      </button>
-
-                      {/* Tooltip */}
-                      {!isInCart && (
-                        <div className="absolute bottom-full right-0 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                          Add to cart
-                        </div>
-                      )}
-                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (api.isPaid && !purchasedAPIs.includes(api.id!)) handleCartToggle(api.id!);
+                      }}
+                      className={`p-2 rounded-full transition-colors ${
+                        api.isPaid && !purchasedAPIs.includes(api.id!)
+                          ? isInCart
+                            ? 'bg-blue-500 text-white'
+                            : 'bg-gray-200 text-gray-600 hover:bg-blue-100 hover:text-blue-500'
+                          : 'bg-gray-100 text-gray-300 cursor-default'
+                      }`}
+                      title={!api.isPaid ? 'Free API' : purchasedAPIs.includes(api.id!) ? 'Already purchased' : isInCart ? 'Remove from cart' : 'Add to cart'}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                      </svg>
+                    </button>
                   </div>
 
                   <div
@@ -1005,9 +986,13 @@ function ApiDetailsPage({ apiId, onBackToHome }: { apiId: string; onBackToHome: 
             // In production, use Algolia/Elasticsearch or a normalized 'slug' field
             const qAll = query(collection(db, 'apis'));
             const allSnapshot = await getDocs(qAll);
-            const foundDoc = allSnapshot.docs.find(d =>
-              d.data().API.toLowerCase() === apiId.toLowerCase()
-            );
+            const foundDoc = allSnapshot.docs.find(d => {
+              const storedName = d.data().API as string;
+              return (
+                storedName.toLowerCase() === apiId.toLowerCase() ||
+                slugify(storedName) === apiId.toLowerCase()
+              );
+            });
             if (foundDoc) {
               apiData = foundDoc.data() as ApiEntry;
               id = foundDoc.id;

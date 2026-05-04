@@ -4,7 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/app/firebase/config';
-import { getFirestore, doc, getDoc, updateDoc, arrayUnion, increment, addDoc, collection } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, updateDoc, arrayUnion, arrayRemove, increment, addDoc, collection } from 'firebase/firestore';
 
 function SuccessPageInner() {
     const router = useRouter();
@@ -61,9 +61,10 @@ function SuccessPageInner() {
                     return;
                 }
 
-                // Update buyer's purchasedAPIs
+                // Update buyer's purchasedAPIs and remove from cart
                 await updateDoc(doc(db, 'users', user.uid), {
                     purchasedAPIs: arrayUnion(apiId),
+                    cart: arrayRemove(apiId),
                 });
 
                 // Update seller's earnings (if seller exists)

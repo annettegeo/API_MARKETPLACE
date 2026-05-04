@@ -3,9 +3,21 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/app/firebase/config';
+import { auth, app } from '@/app/firebase/config';
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  updateDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  orderBy,
+} from 'firebase/firestore';
 
 interface ApiEntry {
+  id?: string;
   API: string;
   Description: string;
   Link: string;
@@ -15,6 +27,19 @@ interface ApiEntry {
   HTTPS: boolean;
   userId?: string;
   submittedAt?: string;
+  status?: string;
+  isPaid?: boolean;
+  price?: number;
+}
+
+interface OrderEntry {
+  id: string;
+  apiId: string;
+  apiName: string;
+  amount: number;
+  createdAt: string;
+  paymentIntentId: string;
+  buyerEmail?: string;
 }
 
 interface UserProfile {
@@ -29,32 +54,36 @@ const ProfilePage: React.FC = () => {
   const router = useRouter();
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [submittedApis, setSubmittedApis] = useState<(ApiEntry & { status?: string })[]>([]);
+  const [submittedApis, setSubmittedApis] = useState<ApiEntry[]>([]);
   const [githubLink, setGithubLink] = useState('');
   const [username, setUsername] = useState('');
   const [editingGithub, setEditingGithub] = useState(false);
   const [editingUsername, setEditingUsername] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingUsername, setSavingUsername] = useState(false);
-  const [activeTab, setActiveTab] = useState<'submitted' | 'wishlist' | 'cart' | 'orders'>('submitted');
-  const [wishlist, setWishlist] = useState<string[]>([]);
-  const [cart, setCart] = useState<string[]>([]);
-  const [orders, setOrders] = useState<any[]>([]);
-  const [apis, setApis] = useState<ApiEntry[]>([]);
+  const [activeTab, setActiveTab] = useState<'submitted' | 'wishlist' | 'orders'>('submitted');
+
+  // Wishlist
+  const [wishlistIds, setWishlistIds] = useState<string[]>([]);
   const [wishlistApis, setWishlistApis] = useState<ApiEntry[]>([]);
-  const [cartApis, setCartApis] = useState<ApiEntry[]>([]);
+  const [wishlistLoading, setWishlistLoading] = useState(false);
+
+  // Orders
+  const [orders, setOrders] = useState<OrderEntry[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser({
           uid: currentUser.uid,
           email: currentUser.email || '',
-          displayName: currentUser.displayName || currentUser.email?.split('@')[0] || 'User'
+          displayName: currentUser.displayName || currentUser.email?.split('@')[0] || 'User',
         });
         fetchUserProfile(currentUser.uid);
         fetchUserApis(currentUser.uid);
-        loadUserDashboardData();
+        await fetchWishlistIds(currentUser.uid);
+        await fetchOrders(currentUser.uid);
       } else {
         router.push('/sign-in');
       }
@@ -63,6 +92,75 @@ const ProfilePage: React.FC = () => {
 
     return () => unsubscribe();
   }, [router]);
+
+  // Fetch wishlist API objects when IDs change
+  useEffect(() => {
+    if (wishlistIds.length === 0) {
+      setWishlistApis([]);
+      return;
+    }
+    const fetchApis = async () => {
+      setWishlistLoading(true);
+      try {
+        const db = getFirestore(app);
+        const promises = wishlistIds.map((id) => getDoc(doc(db, 'apis', id)));
+        const docs = await Promise.all(promises);
+        const apis = docs
+          .filter((d) => d.exists())
+          .map((d) => ({ id: d.id, ...d.data() } as ApiEntry));
+        setWishlistApis(apis);
+      } catch (err) {
+        console.error('Error fetching wishlist APIs:', err);
+      } finally {
+        setWishlistLoading(false);
+      }
+    };
+    fetchApis();
+  }, [wishlistIds]);
+
+  const fetchWishlistIds = async (userId: string) => {
+    try {
+      const db = getFirestore(app);
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      if (userDoc.exists()) {
+        setWishlistIds(userDoc.data().wishlist || []);
+      }
+    } catch (err) {
+      console.error('Error fetching wishlist ids:', err);
+    }
+  };
+
+  const fetchOrders = async (userId: string) => {
+    setOrdersLoading(true);
+    try {
+      const db = getFirestore(app);
+      const q = query(
+        collection(db, 'transactions'),
+        where('buyerId', '==', userId),
+        orderBy('createdAt', 'desc')
+      );
+      const snapshot = await getDocs(q);
+      const txns = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as OrderEntry));
+      setOrders(txns);
+    } catch (err) {
+      console.error('Error fetching orders:', err);
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
+
+  const handleRemoveFromWishlist = async (apiId: string) => {
+    if (!user) return;
+    const newIds = wishlistIds.filter((id) => id !== apiId);
+    setWishlistIds(newIds);
+    try {
+      const db = getFirestore(app);
+      await updateDoc(doc(db, 'users', user.uid), { wishlist: newIds });
+    } catch (err) {
+      console.error('Error removing from wishlist:', err);
+      setWishlistIds(wishlistIds);
+    }
+  };
 
   const fetchUserProfile = async (userId: string) => {
     try {
@@ -87,82 +185,6 @@ const ProfilePage: React.FC = () => {
     } catch (error) {
       console.error('Error fetching user APIs:', error);
     }
-  };
-
-  const loadUserDashboardData = async () => {
-    try {
-      // Load APIs
-      const apisResponse = await fetch('/apis.json');
-      if (apisResponse.ok) {
-        const apisData = await apisResponse.json();
-        setApis(apisData.entries || []);
-      }
-
-      // Load wishlist from localStorage
-      const savedWishlist = localStorage.getItem('wishlist');
-      if (savedWishlist) {
-        const wishlistArray = JSON.parse(savedWishlist);
-        setWishlist(wishlistArray);
-      }
-
-      // Load cart from localStorage
-      const savedCart = localStorage.getItem('cart');
-      if (savedCart) {
-        const cartArray = JSON.parse(savedCart);
-        setCart(cartArray);
-      }
-
-      // Load orders from localStorage
-      const savedOrders = localStorage.getItem('orders');
-      if (savedOrders) {
-        const ordersArray = JSON.parse(savedOrders);
-        setOrders(ordersArray);
-      } else {
-        // Sample orders
-        const sampleOrders = [
-          {
-            id: 'ORD-001',
-            date: '2024-01-15',
-            total: 29.97,
-            items: ['Cat Facts API', 'Dog Pics API', 'Weather API'],
-            status: 'completed'
-          }
-        ];
-        setOrders(sampleOrders);
-      }
-    } catch (error) {
-      console.error('Error loading dashboard data:', error);
-    }
-  };
-
-  useEffect(() => {
-    // Filter APIs that are in wishlist
-    if (apis.length > 0 && wishlist.length > 0) {
-      const filtered = apis.filter(api => wishlist.includes(api.API.toLowerCase().replace(/\s+/g, '-')));
-      setWishlistApis(filtered);
-    } else {
-      setWishlistApis([]);
-    }
-
-    // Filter APIs that are in cart
-    if (apis.length > 0 && cart.length > 0) {
-      const filtered = apis.filter(api => cart.includes(api.API.toLowerCase().replace(/\s+/g, '-')));
-      setCartApis(filtered);
-    } else {
-      setCartApis([]);
-    }
-  }, [apis, wishlist, cart]);
-
-  const handleRemoveFromWishlist = (apiId: string) => {
-    const newWishlist = wishlist.filter(id => id !== apiId);
-    setWishlist(newWishlist);
-    localStorage.setItem('wishlist', JSON.stringify(newWishlist));
-  };
-
-  const handleRemoveFromCart = (apiId: string) => {
-    const newCart = cart.filter(id => id !== apiId);
-    setCart(newCart);
-    localStorage.setItem('cart', JSON.stringify(newCart));
   };
 
   const saveGithubLink = async () => {
@@ -210,9 +232,13 @@ const ProfilePage: React.FC = () => {
     );
   }
 
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
+
+  const tabs = [
+    { id: 'submitted' as const, label: 'Submitted APIs', icon: '📤' },
+    { id: 'wishlist' as const, label: 'Wishlist', icon: '❤️', count: wishlistIds.length },
+    { id: 'orders' as const, label: 'Orders', icon: '📦', count: orders.length },
+  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-orange-50">
@@ -289,6 +315,8 @@ const ProfilePage: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* GitHub */}
               <div className="mb-4">
                 <div className="flex items-center gap-3 mb-2">
                   <span className="text-gray-700 font-semibold">GitHub:</span>
@@ -309,10 +337,7 @@ const ProfilePage: React.FC = () => {
                         {saving ? 'Saving...' : 'Save'}
                       </button>
                       <button
-                        onClick={() => {
-                          setEditingGithub(false);
-                          fetchUserProfile(user.uid);
-                        }}
+                        onClick={() => { setEditingGithub(false); fetchUserProfile(user.uid); }}
                         className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded text-sm transition"
                       >
                         Cancel
@@ -343,15 +368,21 @@ const ProfilePage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex gap-4 text-sm">
+              <div className="flex flex-wrap gap-4 text-sm">
                 <div className="px-3 py-1 bg-gray-100 rounded text-gray-700">
                   {submittedApis.length} API{submittedApis.length !== 1 ? 's' : ''} Submitted
                 </div>
                 <div className="px-3 py-1 bg-green-100 text-green-700 rounded">
-                  {submittedApis.filter(a => (a as any).status === 'approved').length} Approved
+                  {submittedApis.filter((a) => a.status === 'approved').length} Approved
                 </div>
                 <div className="px-3 py-1 bg-yellow-100 text-yellow-700 rounded">
-                  {submittedApis.filter(a => (a as any).status === 'pending').length} Pending Review
+                  {submittedApis.filter((a) => a.status === 'pending').length} Pending Review
+                </div>
+                <div className="px-3 py-1 bg-red-50 text-red-600 rounded flex items-center gap-1">
+                  ❤️ {wishlistIds.length} Wishlisted
+                </div>
+                <div className="px-3 py-1 bg-blue-50 text-blue-600 rounded flex items-center gap-1">
+                  📦 {orders.length} Order{orders.length !== 1 ? 's' : ''}
                 </div>
                 <div className="px-3 py-1 bg-gray-100 rounded text-gray-700">
                   Member since {new Date().getFullYear()}
@@ -364,24 +395,24 @@ const ProfilePage: React.FC = () => {
         {/* Tabs */}
         <div className="bg-white rounded-lg border border-gray-200 p-1 mb-8 shadow-lg">
           <div className="flex gap-1">
-            {[
-              { id: 'submitted' as const, label: 'Submitted APIs', icon: '📤' },
-              { id: 'wishlist' as const, label: 'Wishlist', icon: '❤️', count: wishlist.length },
-              { id: 'cart' as const, label: 'Cart', icon: '🛒', count: cart.length },
-              { id: 'orders' as const, label: 'My Orders', icon: '📦', count: orders.length }
-            ].map((tab) => (
+            {tabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors ${activeTab === tab.id
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors ${
+                  activeTab === tab.id
                     ? 'bg-blue-600 text-white'
                     : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'
-                  }`}
+                }`}
               >
                 <span>{tab.icon}</span>
-                <span>{tab.label}</span>
+                <span className="font-medium">{tab.label}</span>
                 {tab.count !== undefined && tab.count > 0 && (
-                  <span className="px-2 py-0.5 bg-blue-600 bg-opacity-20 rounded-full text-xs">
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                      activeTab === tab.id ? 'bg-white text-blue-600' : 'bg-blue-100 text-blue-600'
+                    }`}
+                  >
                     {tab.count}
                   </span>
                 )}
@@ -390,13 +421,14 @@ const ProfilePage: React.FC = () => {
           </div>
         </div>
 
-        {/* Tab Content */}
+        {/* ===== TAB: Submitted APIs ===== */}
         {activeTab === 'submitted' && (
           <div className="bg-white rounded-lg border border-gray-200 p-8 shadow-lg">
             <h3 className="text-xl font-bold text-gray-800 mb-6">Your Submitted APIs</h3>
             {submittedApis.length === 0 ? (
               <div className="text-center py-12">
-                <div className="text-gray-600 mb-4">You haven't submitted any APIs yet</div>
+                <div className="text-4xl mb-4">📤</div>
+                <div className="text-gray-600 mb-4">You haven&apos;t submitted any APIs yet</div>
                 <button
                   onClick={() => router.push('/submit-api')}
                   className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-semibold"
@@ -413,10 +445,14 @@ const ProfilePage: React.FC = () => {
                   >
                     <div className="flex items-start justify-between mb-3">
                       <h4 className="text-lg font-semibold text-gray-800">{api.API}</h4>
-                      {(api as any).status === 'approved' ? (
-                        <span className="px-2 py-1 bg-green-600 text-white text-xs rounded font-medium">✓ Approved</span>
+                      {api.status === 'approved' ? (
+                        <span className="px-2 py-1 bg-green-600 text-white text-xs rounded font-medium">
+                          ✓ Approved
+                        </span>
                       ) : (
-                        <span className="px-2 py-1 bg-yellow-500 text-white text-xs rounded font-medium">⏳ Pending</span>
+                        <span className="px-2 py-1 bg-yellow-500 text-white text-xs rounded font-medium">
+                          ⏳ Pending
+                        </span>
                       )}
                     </div>
                     <p className="text-gray-600 text-sm mb-4 line-clamp-3">{api.Description}</p>
@@ -445,12 +481,29 @@ const ProfilePage: React.FC = () => {
           </div>
         )}
 
+        {/* ===== TAB: Wishlist ===== */}
         {activeTab === 'wishlist' && (
           <div className="bg-white rounded-lg border border-gray-200 p-8 shadow-lg">
-            <h3 className="text-xl font-bold text-gray-800 mb-6">Your Wishlist</h3>
-            {wishlistApis.length === 0 ? (
+            <h3 className="text-xl font-bold text-gray-800 mb-6">
+              Your Wishlist
+              {wishlistIds.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  ({wishlistIds.length} {wishlistIds.length === 1 ? 'item' : 'items'})
+                </span>
+              )}
+            </h3>
+
+            {wishlistLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : wishlistApis.length === 0 ? (
               <div className="text-center py-12">
-                <div className="text-gray-600 mb-4">Your wishlist is empty</div>
+                <div className="text-5xl mb-4">🤍</div>
+                <div className="text-gray-600 mb-2 text-lg font-medium">Your wishlist is empty</div>
+                <p className="text-gray-500 text-sm mb-6">
+                  Like an API card on the home page to add it here.
+                </p>
                 <button
                   onClick={() => router.push('/')}
                   className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-semibold"
@@ -460,118 +513,89 @@ const ProfilePage: React.FC = () => {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {wishlistApis.map((api) => {
-                  const apiId = api.API.toLowerCase().replace(/\s+/g, '-');
-                  return (
-                    <div
-                      key={api.API}
-                      className="bg-gray-50 rounded-lg p-6 border border-gray-200 hover:border-blue-400 transition-colors"
+                {wishlistApis.map((api) => (
+                  <div
+                    key={api.id}
+                    className="bg-gray-50 rounded-lg p-6 border border-gray-200 hover:border-red-300 transition-colors relative"
+                  >
+                    <button
+                      onClick={() => handleRemoveFromWishlist(api.id!)}
+                      className="absolute top-4 right-4 p-1.5 rounded-full bg-red-50 text-red-500 hover:bg-red-500 hover:text-white transition-colors"
+                      title="Remove from wishlist"
                     >
-                      <div className="flex items-start justify-between mb-3">
-                        <h4 className="text-lg font-semibold text-gray-800">{api.API}</h4>
-                        <button
-                          onClick={() => handleRemoveFromWishlist(apiId)}
-                          className="text-red-500 hover:text-red-400 transition-colors"
-                        >
-                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                          </svg>
-                        </button>
-                      </div>
-                      <p className="text-gray-600 text-sm mb-4 line-clamp-3">{api.Description}</p>
-                      <div className="flex items-center justify-between">
-                        <span className="px-2 py-1 bg-blue-600 text-white text-xs rounded">
-                          {api.Category}
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                      </svg>
+                    </button>
+
+                    <h4 className="text-lg font-semibold text-gray-800 pr-8 mb-1">{api.API}</h4>
+                    <span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded mb-3">
+                      {api.Category}
+                    </span>
+                    <p className="text-gray-600 text-sm mb-4 line-clamp-3">{api.Description}</p>
+
+                    <div className="flex items-center gap-2 flex-wrap text-xs mb-4">
+                      {api.Auth && (
+                        <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">{api.Auth}</span>
+                      )}
+                      {api.HTTPS && (
+                        <span className="px-2 py-0.5 bg-green-50 text-green-700 rounded">HTTPS</span>
+                      )}
+                      {api.isPaid ? (
+                        <span className="px-2 py-0.5 bg-blue-600 text-white rounded">
+                          ₹{api.price?.toFixed(2)}
                         </span>
-                        <a
-                          href={api.Link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:text-blue-700 text-sm transition-colors"
-                        >
-                          View Docs →
-                        </a>
-                      </div>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-green-500 text-white rounded">FREE</span>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
 
-        {activeTab === 'cart' && (
-          <div className="bg-white rounded-lg border border-gray-200 p-8 shadow-lg">
-            <h3 className="text-xl font-bold text-gray-800 mb-6">Your Cart</h3>
-            {cartApis.length === 0 ? (
-              <div className="text-center py-12">
-                <div className="text-gray-600 mb-4">Your cart is empty</div>
-                <button
-                  onClick={() => router.push('/')}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-semibold"
-                >
-                  Explore APIs
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-                  {cartApis.map((api) => {
-                    const apiId = api.API.toLowerCase().replace(/\s+/g, '-');
-                    return (
-                      <div
-                        key={api.API}
-                        className="bg-gray-50 rounded-lg p-6 border border-gray-200 hover:border-blue-400 transition-colors"
+                    <div className="flex items-center justify-between">
+                      <button
+                        onClick={() => router.push(`/?api=${api.API.toLowerCase().replace(/\s+/g, '-')}`)}
+                        className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 transition-colors"
                       >
-                        <div className="flex items-start justify-between mb-3">
-                          <h4 className="text-lg font-semibold text-gray-800">{api.API}</h4>
-                          <button
-                            onClick={() => handleRemoveFromCart(apiId)}
-                            className="text-red-500 hover:text-red-400 transition-colors"
-                          >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                        <p className="text-gray-600 text-sm mb-4 line-clamp-3">{api.Description}</p>
-                        <div className="flex items-center justify-between">
-                          <span className="px-2 py-1 bg-blue-600 text-white text-xs rounded">
-                            {api.Category}
-                          </span>
-                          <a
-                            href={api.Link}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-700 text-sm transition-colors"
-                          >
-                            View Docs →
-                          </a>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-                  <div className="flex justify-between items-center mb-4">
-                    <span className="text-lg font-semibold text-gray-800">Total:</span>
-                    <span className="text-lg font-semibold text-gray-800">₹{(cartApis.length * 9.99).toFixed(2)}</span>
+                        View Details →
+                      </button>
+                      <a
+                        href={api.Link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-500 hover:text-blue-600 hover:underline transition-colors"
+                      >
+                        Docs ↗
+                      </a>
+                    </div>
                   </div>
-                  <button className="w-full px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-semibold">
-                    Proceed to Checkout
-                  </button>
-                </div>
-              </>
+                ))}
+              </div>
             )}
           </div>
         )}
 
+        {/* ===== TAB: Orders ===== */}
         {activeTab === 'orders' && (
           <div className="bg-white rounded-lg border border-gray-200 p-8 shadow-lg">
-            <h3 className="text-xl font-bold text-gray-800 mb-6">My Orders</h3>
-            {orders.length === 0 ? (
+            <h3 className="text-xl font-bold text-gray-800 mb-6">
+              Your Orders
+              {orders.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  ({orders.length} {orders.length === 1 ? 'order' : 'orders'})
+                </span>
+              )}
+            </h3>
+
+            {ordersLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              </div>
+            ) : orders.length === 0 ? (
               <div className="text-center py-12">
-                <div className="text-gray-600 mb-4">You haven't placed any orders yet</div>
+                <div className="text-5xl mb-4">📦</div>
+                <div className="text-gray-600 mb-2 text-lg font-medium">No orders yet</div>
+                <p className="text-gray-500 text-sm mb-6">
+                  Purchase a paid API to see your orders here.
+                </p>
                 <button
                   onClick={() => router.push('/')}
                   className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-semibold"
@@ -584,40 +608,42 @@ const ProfilePage: React.FC = () => {
                 {orders.map((order) => (
                   <div
                     key={order.id}
-                    className="bg-gray-50 rounded-lg border border-gray-200 p-6 hover:border-blue-400 transition-colors"
+                    className="bg-gray-50 rounded-lg border border-gray-200 p-6 hover:border-blue-300 transition-colors"
                   >
-                    <div className="flex justify-between items-start mb-4">
+                    <div className="flex items-start justify-between mb-3">
                       <div>
-                        <h4 className="text-lg font-semibold text-gray-800">{order.id}</h4>
-                        <p className="text-gray-600 text-sm">
-                          {new Date(order.date).toLocaleDateString('en-US', {
+                        <h4 className="text-lg font-semibold text-gray-800">{order.apiName}</h4>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {new Date(order.createdAt).toLocaleDateString('en-IN', {
                             year: 'numeric',
                             month: 'long',
-                            day: 'numeric'
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
                           })}
                         </p>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className="px-3 py-1 bg-green-600 text-white text-xs rounded-full">
-                          {order.status}
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-lg font-bold text-gray-900">
+                          ₹{(order.amount / 100).toFixed(2)}
                         </span>
-                        <span className="text-lg font-semibold text-gray-800">
-                          ₹{order.total.toFixed(2)}
+                        <span className="px-2.5 py-0.5 bg-green-100 text-green-700 text-xs rounded-full font-medium">
+                          ✓ Completed
                         </span>
                       </div>
                     </div>
-                    <div className="mb-4">
-                      <h5 className="text-sm font-medium text-gray-700 mb-2">Items:</h5>
-                      <div className="flex flex-wrap gap-2">
-                        {order.items.map((item: string, index: number) => (
-                          <span
-                            key={index}
-                            className="px-2 py-1 bg-gray-200 text-gray-700 text-xs rounded"
-                          >
-                            {item}
-                          </span>
-                        ))}
-                      </div>
+                    <div className="flex items-center gap-4 text-xs text-gray-500 border-t border-gray-200 pt-3 mt-2">
+                      <span>
+                        Transaction: <code className="bg-gray-100 px-1.5 py-0.5 rounded font-mono text-[10px]">
+                          {order.paymentIntentId?.slice(0, 22)}...
+                        </code>
+                      </span>
+                      <button
+                        onClick={() => router.push(`/?api=${order.apiName.toLowerCase().replace(/\s+/g, '-')}`)}
+                        className="text-blue-600 hover:text-blue-700 font-medium"
+                      >
+                        View API →
+                      </button>
                     </div>
                   </div>
                 ))}

@@ -83,7 +83,7 @@ export async function GET(request: Request) {
         const example = $(el).text().trim();
         if (example && example.length > 20 && example.length < 2000) {
           // Filter for API-related content but exclude error messages
-          const isApiExample = /(GET|POST|PUT|DELETE|PATCH|curl|fetch|axios|http|api|endpoint|request|response|json|xml|range|hash|sha1|pwned)/i.test(example);
+          const isApiExample = /(GET|POST|PUT|DELETE|PATCH|curl|fetch|axios|http|api|endpoint|request|response|json|xml)/i.test(example);
           const isErrorExample = /(access denied|missing|invalid|improperly formed|error|unauthorized|forbidden)/i.test(example);
           
           if (isApiExample && !isErrorExample && !examples.includes(example)) {
@@ -92,25 +92,7 @@ export async function GET(request: Request) {
         }
       });
     });
-    const hibpExamples = [
-      'GET https://api.pwnedpasswords.com/range/{first 5 hash chars}',
-      'curl -H "hibp-api-key: your-api-key" https://haveibeenpwned.com/api/v3/breachedaccount/test@example.com',
-      'GET https://haveibeenpwned.com/api/v3/breachedaccount/{account}',
-      'GET https://haveibeenpwned.com/api/v3/breach/{breachName}',
-      'GET https://haveibeenpwned.com/api/v3/breaches',
-      'GET https://api.pwnedpasswords.com/range/21BD1',
-      'curl https://api.pwnedpasswords.com/range/21BD1',
-      'GET https://haveibeenpwned.com/api/v3/breachedaccount/test@example.com'
-    ];
 
-    // Add HIBP-specific examples if we're scraping HIBP documentation
-    if (urlToScrape.includes('haveibeenpwned') || urlToScrape.includes('pwned')) {
-      hibpExamples.forEach(example => {
-        if (!examples.includes(example)) {
-          examples.push(example);
-        }
-      });
-    }
 
     // If no API examples found, get any code blocks
     if (examples.length === 0) {
@@ -132,8 +114,7 @@ export async function GET(request: Request) {
     const sectionKeywords = [
       'requirement', 'feature', 'getting started', 'prerequisite', 
       'installation', 'quick start', 'authentication', 'api key',
-      'usage', 'example', 'endpoint', 'method', 'rate limit',
-      'password', 'breach', 'security', 'hash', 'range'
+      'usage', 'example', 'endpoint', 'method', 'rate limit'
     ];
     
     $('h1, h2, h3, h4, h5').each((_idx, el) => {
@@ -170,22 +151,7 @@ export async function GET(request: Request) {
       }
     });
 
-    // Add HIBP-specific requirements if we're scraping HIBP documentation
-    if (urlToScrape.includes('haveibeenpwned') || urlToScrape.includes('pwned')) {
-      const hibpRequirements = [
-        'Password range API uses first 5 characters of SHA-1 hash',
-        'Rate limited to 1 request per 1.5 seconds',
-        'No API key needed for password range checking',
-        'Supports k-anonymity for password security',
-        'Returns breach count for compromised passwords'
-      ];
-      
-      hibpRequirements.forEach(req => {
-        if (!requirements.includes(req)) {
-          requirements.push(req);
-        }
-      });
-    }
+
 
     // 4. Determine if it's a REST API (improved detection)
     const bodyText = $('body').text().toLowerCase();

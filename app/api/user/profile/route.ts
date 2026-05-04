@@ -65,6 +65,8 @@ export async function POST(request: NextRequest) {
           email: email || null,
           credits: 0,
           purchasedAPIs: [],
+          wishlist: [],
+          cart: [],
           earnings: 0,
           createdAt: new Date().toISOString(),
         });
@@ -81,6 +83,8 @@ export async function POST(request: NextRequest) {
         ...updateData,
         credits: 0,
         purchasedAPIs: [],
+        wishlist: [],
+        cart: [],
         earnings: 0,
         createdAt: new Date().toISOString(),
       }, { merge: true });
